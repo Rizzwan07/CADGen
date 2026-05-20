@@ -326,8 +326,10 @@ def generate_cad(prompt: str) -> dict:
         HumanMessage(content=prompt),
     ]
 
+    code = ""
     try:
         max_retries = 5
+        response = None
         for attempt in range(max_retries):
             try:
                 response = llm.invoke(messages)
@@ -339,6 +341,8 @@ def generate_cad(prompt: str) -> dict:
                         time.sleep(wait)
                         continue
                 raise
+        if response is None:
+            return {"error": "Failed to reach AI service after multiple retries. Please try again.", "code": ""}
         code = response.content.strip()
 
         import cadquery as cq
@@ -352,7 +356,8 @@ def generate_cad(prompt: str) -> dict:
                 if code.endswith("```"):
                     code = code[:-3].strip()
 
-            exec_globals = {"cq": cq}
+            import math
+            exec_globals = {"cq": cq, "math": math}
             try:
                 exec(code, exec_globals)
             except Exception as exec_err:
@@ -401,21 +406,44 @@ def generate_cad(prompt: str) -> dict:
 
         cq.exporters.export(result, stl_path, exportType="STL")
         cq.exporters.export(result, step_path, exportType="STEP")
-        cq.exporters.export(result.section(), dxf_path, exportType="DXF")
+        try:
+            cq.exporters.export(result.section(), dxf_path, exportType="DXF")
+        except Exception:
+            dxf_name = None
+            dxf_path = None
 
-        return {
+        # Calculate model info
+        bb = result.val().BoundingBox()
+        width = round(bb.xlen, 2)
+        depth = round(bb.ylen, 2)
+        height = round(bb.zlen, 2)
+
+        shape = result.val()
+        volume = round(shape.Volume() / 1000, 2)  # mm³ to cm³
+        surface_area = round(shape.Area() / 100, 2)  # mm² to cm²
+
+        resp = {
             "code": code,
             "stl_file": stl_name,
             "step_file": step_name,
-            "dxf_file": dxf_name,
             "stl_url": f"/download/{stl_name}",
             "step_url": f"/download/{step_name}",
-            "dxf_url": f"/download/{dxf_name}",
+            "model_info": {
+                "width_mm": width,
+                "depth_mm": depth,
+                "height_mm": height,
+                "volume_cm3": volume,
+                "surface_area_cm2": surface_area,
+            },
         }
+        if dxf_name:
+            resp["dxf_file"] = dxf_name
+            resp["dxf_url"] = f"/download/{dxf_name}"
+        return resp
 
     except Exception as e:
         user_error = _explain_error(str(e), prompt)
-        return {"error": user_error, "code": code if 'code' in dir() else ""}
+        return {"error": user_error, "code": code if 'code' in locals() else ""}
 
 
 def _explain_error(error: str, prompt: str) -> str:

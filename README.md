@@ -106,7 +106,7 @@ python main.py
 
 You should see:
 ```
-INFO:     Uvicorn running on http://0.0.0.0:8000
+INFO:     Uvicorn running on http://0.0.0.0:8001
 ```
 
 Leave this terminal open and running.
@@ -262,7 +262,7 @@ Go to http://localhost:5173 in your browser. You should see the CadGen interface
 
 | Problem | Solution |
 |---------|----------|
-| "Cannot reach backend" | Make sure the backend is running on port 8000 |
+| "Cannot reach backend" | Make sure the backend is running on port 8001 |
 | Model looks wrong | Try rephrasing with more specific dimensions |
 | 429 rate limit error | Wait a few seconds, it will auto-retry |
 | "pip install" fails | Make sure your virtual environment is activated |
@@ -301,6 +301,272 @@ CADGen/
 │   └── index.html
 └── README.md
 ```
+
+---
+
+## Why Was This Built?
+
+### The Problem
+
+Designing 3D CAD models traditionally requires:
+- Expensive software licenses (Fusion 360, SolidWorks, CATIA)
+- Weeks/months of learning complex UIs
+- Knowledge of sketching, constraints, feature trees, etc.
+
+**Most people have an idea in their head but can't turn it into a 3D model.**
+
+### The Solution
+
+CadGen lets anyone describe a part in plain English and get a production-ready CAD file (STEP/STL) in seconds. No CAD knowledge needed. No software to install. Just describe what you want.
+
+### Who Is This For?
+
+- **Hobbyists** who want to 3D print parts but can't use CAD software
+- **Engineers** who want quick prototypes without opening Fusion 360
+- **Students** learning about mechanical design
+- **Makers** who need custom brackets, enclosures, mounts quickly
+- **Anyone** with an idea for a physical part
+
+---
+
+## Architecture
+
+### Pipeline
+
+```
+[User Input] ──▶ [Frontend (React)] ──▶ [Backend API (FastAPI)] ──▶ [Cerebras LLM (Qwen-3-235B)]
+                                                                              │
+                                                                              ▼
+                                                                    [Generated CadQuery Code]
+                                                                              │
+                                                                              ▼
+                                                                    [Execute Code (CadQuery)]
+                                                                              │
+                                                 ┌────────────────────────────┼────────────────────────────┐
+                                                 │                            │                            │
+                                                 ▼                            ▼                            ▼
+                                           [Success]                  [Code Error]                  [API 429 Error]
+                                                 │                            │                            │
+                                                 ▼                            ▼                            ▼
+                                        [Export STL/STEP/DXF]        [Send error to LLM]         [Retry with backoff]
+                                                 │                     [Ask to fix code]           [Wait 1s,2s,4s...]
+                                                 ▼                            │                            │
+                                        [Return 3D files]                     ▼                            ▼
+                                                 │                    [Retry up to 3x]             [Retry up to 5x]
+                                                 ▼                            │                            │
+                                        [3D Viewer renders]                   ▼                            ▼
+                                                 │                  ┌─────────┴─────────┐        [Resume generation]
+                                                 ▼                  │                   │
+                                        [User downloads]      [Fixed ──▶ Export]  [Failed ──▶ LLM explains
+                                         STL / STEP / DXF                          error in plain English]
+```
+
+### System Flowchart
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                         USER (Browser)                           │
+│                                                                  │
+│  1. Types: "A gear with 20 teeth, 10mm bore"                   │
+│  2. Clicks Send                                                  │
+└──────────────────────────────┬──────────────────────────────────┘
+                               │ HTTP POST /generate
+                               ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                    FRONTEND (React + Vite)                       │
+│                                                                  │
+│  • Sends prompt to backend                                      │
+│  • Shows loading animation while waiting                        │
+│  • Renders 3D model with Three.js when ready                    │
+│  • Provides STEP/STL/DXF download buttons                       │
+└──────────────────────────────┬──────────────────────────────────┘
+                               │ fetch() to localhost:8001
+                               ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                    BACKEND (FastAPI + Python)                    │
+│                                                                  │
+│  ┌──────────────┐    ┌──────────────┐    ┌──────────────┐      │
+│  │   Receive    │───▶│  Call LLM    │───▶│  Execute     │      │
+│  │   Prompt     │    │  (Cerebras)  │    │  CadQuery    │      │
+│  └──────────────┘    └──────┬───────┘    └──────┬───────┘      │
+│                             │                    │               │
+│                    ┌────────▼────────┐   ┌──────▼───────┐      │
+│                    │  If 429 error:  │   │  If code     │      │
+│                    │  Retry with     │   │  fails:      │      │
+│                    │  backoff        │   │  Feed error  │      │
+│                    │  (up to 5x)    │   │  back to LLM │      │
+│                    └─────────────────┘   │  (up to 3x)  │      │
+│                                          └──────┬───────┘      │
+│                                                 │               │
+│                                          ┌──────▼───────┐      │
+│                                          │  Export:     │      │
+│                                          │  .STL .STEP  │      │
+│                                          │  .DXF        │      │
+│                                          └──────────────┘      │
+└──────────────────────────────┬──────────────────────────────────┘
+                               │
+                               ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                    EXTERNAL SERVICES                             │
+│                                                                  │
+│  ┌─────────────────┐         ┌─────────────────┐               │
+│  │   Cerebras AI   │         │   LangSmith     │               │
+│  │   (Qwen-3-235B) │         │   (Monitoring)  │               │
+│  │                  │         │                  │               │
+│  │  Generates       │         │  Traces all     │               │
+│  │  CadQuery code   │         │  LLM calls      │               │
+│  └─────────────────┘         └─────────────────┘               │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### How It Works (Step by Step)
+
+```
+User Prompt
+    │
+    ▼
+┌─────────────────────┐
+│ 1. Prompt received  │
+└─────────┬───────────┘
+          │
+          ▼
+┌─────────────────────┐     ┌─────────────────────┐
+│ 2. LLM generates    │────▶│ 3. Code executed    │
+│    CadQuery code    │     │    by CadQuery      │
+└─────────────────────┘     └─────────┬───────────┘
+                                      │
+                            ┌─────────┴─────────┐
+                            │                   │
+                            ▼                   ▼
+                     ┌─────────────┐     ┌─────────────┐
+                     │  SUCCESS    │     │   FAILED    │
+                     │             │     │             │
+                     │ Export STL  │     │ Send error  │
+                     │ Export STEP │     │ back to LLM │
+                     │ Export DXF  │     │ "Fix this"  │
+                     └─────────────┘     └──────┬──────┘
+                                                │
+                                                ▼
+                                         ┌─────────────┐
+                                         │ Retry up to │
+                                         │ 3 times     │
+                                         └──────┬──────┘
+                                                │
+                                       ┌────────┴────────┐
+                                       │                 │
+                                       ▼                 ▼
+                                ┌─────────────┐   ┌─────────────┐
+                                │  FIXED!     │   │  Still      │
+                                │  Export     │   │  broken     │
+                                │  files      │   │             │
+                                └─────────────┘   │  LLM writes │
+                                                  │  friendly   │
+                                                  │  error msg  │
+                                                  └─────────────┘
+```
+
+---
+
+## Architecture Decisions & Why
+
+| Decision | Why |
+|----------|-----|
+| **Cerebras over OpenAI/Groq** | Free tier with higher rate limits, fast inference for large models |
+| **CadQuery over OpenSCAD** | CadQuery produces industry-standard STEP files, better for real manufacturing |
+| **LangChain wrapper** | Easy to swap LLM providers later, built-in LangSmith integration |
+| **Self-healing retries** | LLMs often generate code with small errors — feeding the error back lets it fix itself |
+| **User-friendly error messages** | Non-technical users shouldn't see Python tracebacks |
+| **STL + STEP + DXF export** | STL for 3D printing, STEP for CAD software, DXF for laser cutting |
+| **Three.js viewer** | Real-time 3D preview without any plugins or downloads |
+| **System prompt with examples** | LLMs generate much better CadQuery when given working patterns to follow |
+| **Sandboxed code execution** | LLM-generated code runs in a restricted context — only CadQuery and math are accessible |
+
+---
+
+## Security: Sandboxed Code Execution
+
+Since the LLM generates Python code that we **execute** on the server (via `exec()`), we use a sandboxed execution context:
+
+```python
+exec_globals = {"cq": cq, "math": math}
+exec(code, exec_globals)
+```
+
+| Allowed | Blocked |
+|---------|---------|
+| `cq` (CadQuery library) | `os` (file system access) |
+| `math` (calculations) | `subprocess` (run shell commands) |
+| | `sys` (system configuration) |
+| | `open()` (read/write files) |
+| | `requests` (network calls) |
+| | `__import__` (import arbitrary modules) |
+
+**Why this matters:** Without sandboxing, the LLM could generate code like `os.system("rm -rf /")` and it would execute on your machine. The sandbox ensures only CAD-related operations can run.
+
+**Production note:** This is a lightweight sandbox. For production deployment, you'd want Docker container isolation or a restricted Python interpreter (like RestrictedPython).
+
+---
+
+## Pros and Cons
+
+### Pros
+
+| Advantage | Details |
+|-----------|---------|
+| No CAD skills needed | Describe parts in plain English |
+| Free to run | Uses free API tiers (Cerebras, LangSmith) |
+| Industry-standard output | STEP files work in Fusion 360, SolidWorks, FreeCAD |
+| Fast generation | Models generated in 5-15 seconds |
+| Self-healing | Auto-retries with error correction if code fails |
+| 3D preview | See the model instantly in browser before downloading |
+| Multiple formats | STL (3D printing), STEP (CAD), DXF (laser cutting) |
+| Open source | Fully customizable, swap models, add features |
+| Beginner friendly | No complex setup, just API keys and npm/pip |
+
+### Cons
+
+| Limitation | Details |
+|------------|---------|
+| Complex geometry struggles | Very detailed parts (gears, threads) may not generate correctly |
+| No iterative editing | Can't say "now add holes" to modify existing model (LLM rewrites from scratch) |
+| Depends on LLM quality | Output quality is limited by what Qwen-3-235B can generate |
+| Rate limits | Heavy usage hits Cerebras API limits (auto-retry helps but doesn't eliminate) |
+| No assemblies | Single parts only, can't generate multi-part assemblies |
+| No dimensions/annotations | Generated models don't include engineering drawings |
+| CadQuery limitations | Some operations (complex sweeps, lofts) are hard for LLM to get right |
+| No material properties | Models are geometry only, no material/mass data |
+
+---
+
+## What Works Well vs What Doesn't
+
+### Works Great
+- Boxes, plates, brackets, enclosures
+- Flanges with bolt hole patterns
+- Simple cylindrical parts (shafts, tubes, pulleys)
+- Parts with holes (counterbored, countersunk, through)
+- Structural profiles (T-slot, I-beam, channels)
+- Heat sinks with fins
+
+### Struggles With
+- Gear tooth profiles (sometimes generates plain cylinder)
+- Realistic screw threads (helix geometry is complex)
+- Organic/curved shapes (handles, airfoils)
+- Very complex multi-feature parts (too many operations)
+- Assemblies or parts that reference each other
+
+---
+
+## Future Improvements
+
+- [ ] Switch to Claude/GPT-4 for better code generation on complex parts
+- [ ] Add iterative editing (modify existing model with follow-up prompts)
+- [ ] Add parameter sliders (adjust dimensions without re-prompting)
+- [ ] Support multiple LLM providers with fallback
+- [ ] Add STL mesh preview quality settings
+- [ ] Engineering drawing generation (2D views with dimensions)
+- [ ] Part library (save and reuse generated models)
+- [ ] Multi-part assembly support
 
 ---
 

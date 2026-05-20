@@ -1,9 +1,9 @@
 import { useState } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { Send, Loader2, Download, Code2, Box } from 'lucide-react'
+import { Send, Loader2, Download, Code2, Box, History, Trash2 } from 'lucide-react'
 import { Viewer } from './Viewer'
 
-const API_URL = 'http://localhost:8000'
+const API_URL = 'http://localhost:8001'
 
 const examples = [
   'A box 50x30x20mm with 3mm fillets',
@@ -13,12 +13,28 @@ const examples = [
   'Simple gear 20 teeth',
 ]
 
+interface ModelInfo {
+  width_mm: number
+  depth_mm: number
+  height_mm: number
+  volume_cm3: number
+  surface_area_cm2: number
+}
+
 interface GenerateResult {
   code: string
   stl_url: string
   step_url: string
   dxf_url: string
   error?: string
+  model_info?: ModelInfo
+}
+
+interface HistoryItem {
+  id: number
+  prompt: string
+  result: GenerateResult
+  timestamp: Date
 }
 
 export default function App() {
@@ -27,6 +43,8 @@ export default function App() {
   const [result, setResult] = useState<GenerateResult | null>(null)
   const [error, setError] = useState('')
   const [showCode, setShowCode] = useState(false)
+  const [history, setHistory] = useState<HistoryItem[]>([])
+  const [showHistory, setShowHistory] = useState(false)
 
   const handleGenerate = async (text?: string) => {
     const q = (text ?? prompt).trim()
@@ -50,9 +68,13 @@ export default function App() {
         setResult(data)
       } else {
         setResult(data)
+        setHistory((prev) => [
+          { id: Date.now(), prompt: q, result: data, timestamp: new Date() },
+          ...prev,
+        ])
       }
     } catch {
-      setError('Cannot reach backend. Is it running on port 8000?')
+      setError('Cannot reach backend. Is it running on port 8001?')
     }
 
     setLoading(false)
@@ -72,11 +94,22 @@ export default function App() {
         <Box size={18} className="text-indigo-500" />
         <span className="ml-2 text-sm font-semibold text-neutral-800">CadGen</span>
         <span className="ml-2 text-xs text-neutral-400">Text to CAD</span>
+        <div className="ml-auto flex items-center gap-2">
+          <button
+            onClick={() => setShowHistory(!showHistory)}
+            className={`flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium rounded-lg transition-colors ${
+              showHistory ? 'bg-indigo-50 text-indigo-600' : 'text-neutral-500 hover:text-indigo-600 hover:bg-indigo-50'
+            }`}
+          >
+            <History size={14} />
+            History ({history.length})
+          </button>
+        </div>
       </header>
 
       <div className="flex-1 flex overflow-hidden">
         {/* Left panel — prompt + code */}
-        <div className="w-[400px] border-r border-neutral-200 bg-white flex flex-col shrink-0">
+        <div className="w-100 border-r border-neutral-200 bg-white flex flex-col shrink-0">
           {/* Input */}
           <div className="p-4 border-b border-neutral-100">
             <div className="relative">
@@ -159,14 +192,39 @@ export default function App() {
                   <Download size={14} />
                   STL
                 </a>
-                <a
-                  href={`${API_URL}${result.dxf_url}`}
-                  className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2 bg-teal-600 text-white text-sm font-medium rounded-xl hover:bg-teal-700 transition-colors"
-                >
-                  <Download size={14} />
-                  DXF
-                </a>
+                {result.dxf_url && (
+                  <a
+                    href={`${API_URL}${result.dxf_url}`}
+                    className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2 bg-teal-600 text-white text-sm font-medium rounded-xl hover:bg-teal-700 transition-colors"
+                  >
+                    <Download size={14} />
+                    DXF
+                  </a>
+                )}
               </div>
+              {result.model_info && (
+                <div className="bg-neutral-50 border border-neutral-200 rounded-xl p-3 space-y-1.5">
+                  <p className="text-[10px] font-semibold text-neutral-500 uppercase tracking-wide">Model Info</p>
+                  <div className="grid grid-cols-2 gap-x-4 gap-y-1">
+                    <div className="text-xs text-neutral-600">
+                      <span className="text-neutral-400">W:</span> {result.model_info.width_mm}mm
+                    </div>
+                    <div className="text-xs text-neutral-600">
+                      <span className="text-neutral-400">D:</span> {result.model_info.depth_mm}mm
+                    </div>
+                    <div className="text-xs text-neutral-600">
+                      <span className="text-neutral-400">H:</span> {result.model_info.height_mm}mm
+                    </div>
+                    <div className="text-xs text-neutral-600">
+                      <span className="text-neutral-400">Vol:</span> {result.model_info.volume_cm3} cm³
+                    </div>
+                    <div className="text-xs text-neutral-600 col-span-2">
+                      <span className="text-neutral-400">Surface:</span> {result.model_info.surface_area_cm2} cm²
+                    </div>
+                  </div>
+                </div>
+              )}
+
               <button
                 onClick={() => setShowCode(!showCode)}
                 className={`flex items-center gap-1.5 text-xs font-medium px-2.5 py-1.5 rounded-lg transition-colors ${
@@ -191,6 +249,56 @@ export default function App() {
             </div>
           )}
         </div>
+
+        {/* History panel */}
+        <AnimatePresence>
+          {showHistory && (
+            <motion.div
+              initial={{ width: 0, opacity: 0 }}
+              animate={{ width: 280, opacity: 1 }}
+              exit={{ width: 0, opacity: 0 }}
+              className="border-r border-neutral-200 bg-white flex flex-col overflow-hidden shrink-0"
+            >
+              <div className="p-3 border-b border-neutral-100 flex items-center justify-between">
+                <span className="text-xs font-semibold text-neutral-700">Generation History</span>
+                {history.length > 0 && (
+                  <button
+                    onClick={() => setHistory([])}
+                    className="text-xs text-neutral-400 hover:text-red-500 transition-colors"
+                  >
+                    <Trash2 size={12} />
+                  </button>
+                )}
+              </div>
+              <div className="flex-1 overflow-y-auto">
+                {history.length === 0 ? (
+                  <div className="p-4 text-xs text-neutral-400 text-center">
+                    No history yet. Generate a model to see it here.
+                  </div>
+                ) : (
+                  history.map((item) => (
+                    <button
+                      key={item.id}
+                      onClick={() => {
+                        setResult(item.result)
+                        setPrompt(item.prompt)
+                        setError('')
+                      }}
+                      className="w-full text-left p-3 border-b border-neutral-50 hover:bg-indigo-50 transition-colors group"
+                    >
+                      <p className="text-xs text-neutral-700 font-medium line-clamp-2 group-hover:text-indigo-700">
+                        {item.prompt}
+                      </p>
+                      <p className="text-[10px] text-neutral-400 mt-1">
+                        {item.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                      </p>
+                    </button>
+                  ))
+                )}
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
 
         {/* Right panel — 3D viewer */}
         <div className="flex-1 bg-neutral-100 relative">
