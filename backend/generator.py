@@ -34,6 +34,7 @@ RULES:
 10. NEVER use .polarArray() without checking signature: .polarArray(radius, startAngle, angle, count)
 11. Always select edges with .edges() before calling .fillet() or .chamfer()
 12. Keep fillet/chamfer radii small relative to the smallest feature dimension
+13. If you receive existing model code with a modification request, MODIFY that code — keep all existing features and only add/change what the user asks. Do NOT rewrite from scratch unless the request is clearly a brand new unrelated model.
 
 EXAMPLE OUTPUT for "Create a box 50x30x20 with 3mm fillets on all edges":
 result = (
@@ -320,10 +321,31 @@ result = (
 Only output the code. Nothing else."""
 
 
-def generate_cad(prompt: str) -> dict:
+sessions: dict[str, dict] = {}
+
+MAX_EDITS = 3
+
+
+def generate_cad(prompt: str, session_id: str = None) -> dict:
+    prev_code = None
+    if session_id and session_id in sessions:
+        session = sessions[session_id]
+        if session["edits"] >= MAX_EDITS:
+            return {"error": "Edit limit reached. Start a new design.", "code": ""}
+        prev_code = session["code"]
+        session["edits"] += 1
+    else:
+        session_id = str(uuid.uuid4())[:8]
+        sessions[session_id] = {"code": None, "edits": 0}
+
+    if prev_code:
+        user_content = f"Current model code:\n{prev_code}\n\nModify it to: {prompt}\n\nIf this request is clearly a brand new unrelated model, ignore the current code and start fresh."
+    else:
+        user_content = prompt
+
     messages = [
         SystemMessage(content=SYSTEM_PROMPT),
-        HumanMessage(content=prompt),
+        HumanMessage(content=user_content),
     ]
 
     code = ""
@@ -392,6 +414,9 @@ def generate_cad(prompt: str) -> dict:
                 return {"error": "Code did not produce a 'result' variable", "code": code}
             break
 
+        # Store code in session
+        sessions[session_id]["code"] = code
+
         # Export files
         output_dir = os.path.join(tempfile.gettempdir(), "cadgen")
         os.makedirs(output_dir, exist_ok=True)
@@ -422,12 +447,16 @@ def generate_cad(prompt: str) -> dict:
         volume = round(shape.Volume() / 1000, 2)  # mm³ to cm³
         surface_area = round(shape.Area() / 100, 2)  # mm² to cm²
 
+        edits_remaining = MAX_EDITS - sessions[session_id]["edits"]
+
         resp = {
             "code": code,
             "stl_file": stl_name,
             "step_file": step_name,
             "stl_url": f"/download/{stl_name}",
             "step_url": f"/download/{step_name}",
+            "session_id": session_id,
+            "edits_remaining": edits_remaining,
             "model_info": {
                 "width_mm": width,
                 "depth_mm": depth,

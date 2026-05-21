@@ -20,10 +20,11 @@ app.add_middleware(
 
 class PromptRequest(BaseModel):
     prompt: str
+    session_id: str | None = None
 
 @app.post("/generate")
 def generate(request: PromptRequest):
-    result = generate_cad(request.prompt)
+    result = generate_cad(request.prompt, request.session_id)
     if result.get("error"):
         raise HTTPException(status_code=400, detail=result["error"])
     return result

@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { Send, Loader2, Download, Code2, Box, History, Trash2 } from 'lucide-react'
+import { Send, Loader2, Download, Code2, Box, History, Trash2, RotateCcw } from 'lucide-react'
 import { Viewer } from './Viewer'
 
 const API_URL = 'http://localhost:8001'
@@ -28,6 +28,8 @@ interface GenerateResult {
   dxf_url: string
   error?: string
   model_info?: ModelInfo
+  session_id?: string
+  edits_remaining?: number
 }
 
 interface HistoryItem {
@@ -45,6 +47,8 @@ export default function App() {
   const [showCode, setShowCode] = useState(false)
   const [history, setHistory] = useState<HistoryItem[]>([])
   const [showHistory, setShowHistory] = useState(false)
+  const [sessionId, setSessionId] = useState<string | null>(null)
+  const [editsRemaining, setEditsRemaining] = useState<number | null>(null)
 
   const handleGenerate = async (text?: string) => {
     const q = (text ?? prompt).trim()
@@ -58,7 +62,7 @@ export default function App() {
       const res = await fetch(`${API_URL}/generate`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt: q }),
+        body: JSON.stringify({ prompt: q, session_id: sessionId }),
       })
       const data = await res.json()
       if (!res.ok) {
@@ -68,6 +72,8 @@ export default function App() {
         setResult(data)
       } else {
         setResult(data)
+        if (data.session_id) setSessionId(data.session_id)
+        if (data.edits_remaining !== undefined) setEditsRemaining(data.edits_remaining)
         setHistory((prev) => [
           { id: Date.now(), prompt: q, result: data, timestamp: new Date() },
           ...prev,
@@ -129,7 +135,7 @@ export default function App() {
               />
               <button
                 onClick={() => handleGenerate()}
-                disabled={loading || !prompt.trim()}
+                disabled={loading || !prompt.trim() || editsRemaining === 0}
                 className="absolute right-2 top-1/2 -translate-y-1/2 w-8 h-8 rounded-lg bg-indigo-500 text-white flex items-center justify-center disabled:bg-neutral-200 disabled:text-neutral-400 hover:bg-indigo-600 transition-colors"
               >
                 {loading ? <Loader2 size={14} className="animate-spin" /> : <Send size={14} />}
@@ -224,6 +230,32 @@ export default function App() {
                   </div>
                 </div>
               )}
+
+              {/* Edit counter & New Design button */}
+              <div className="flex items-center justify-between">
+                {editsRemaining !== null && editsRemaining > 0 && (
+                  <span className="text-xs text-neutral-500">
+                    {editsRemaining} edit{editsRemaining !== 1 ? 's' : ''} remaining
+                  </span>
+                )}
+                {editsRemaining === 0 && (
+                  <span className="text-xs text-amber-600 font-medium">No edits remaining</span>
+                )}
+                <button
+                  onClick={() => {
+                    setSessionId(null)
+                    setEditsRemaining(null)
+                    setResult(null)
+                    setPrompt('')
+                    setError('')
+                    setShowCode(false)
+                  }}
+                  className="flex items-center gap-1.5 text-xs font-medium px-3 py-1.5 rounded-lg bg-indigo-50 text-indigo-600 hover:bg-indigo-100 transition-colors"
+                >
+                  <RotateCcw size={12} />
+                  New Design
+                </button>
+              </div>
 
               <button
                 onClick={() => setShowCode(!showCode)}
